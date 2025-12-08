@@ -106,6 +106,13 @@ impl S3 for FileSystem {
             let _ = try_!(fs::copy(src_metadata_path, dst_metadata_path).await);
         }
 
+        // Copy internal info (checksums, HTTP headers like Content-Encoding, etc.)
+        let src_internal_info_path = self.get_internal_info_path(bucket, key)?;
+        if src_internal_info_path.exists() {
+            let dst_internal_info_path = self.get_internal_info_path(&input.bucket, &input.key)?;
+            let _ = try_!(fs::copy(src_internal_info_path, dst_internal_info_path).await);
+        }
+
         let md5_sum = self.get_md5_sum(bucket, key).await?;
 
         let copy_object_result = CopyObjectResult {
@@ -149,6 +156,13 @@ impl S3 for FileSystem {
         } else {
             try_!(fs::remove_file(&path).await);
         }
+
+        // Clean up metadata and internal info files
+        let _ = self.delete_metadata(&input.bucket, &input.key, None);
+        if let Ok(internal_info_path) = self.get_internal_info_path(&input.bucket, &input.key) {
+            let _ = fs::remove_file(internal_info_path).await;
+        }
+
         let output = DeleteObjectOutput::default(); // TODO: handle other fields
         Ok(S3Response::new(output))
     }
@@ -167,6 +181,12 @@ impl S3 for FileSystem {
         let mut deleted_objects: Vec<DeletedObject> = Vec::new();
         for (path, key) in objects {
             try_!(fs::remove_file(path).await);
+
+            // Clean up metadata and internal info files
+            let _ = self.delete_metadata(&input.bucket, &key, None);
+            if let Ok(internal_info_path) = self.get_internal_info_path(&input.bucket, &key) {
+                let _ = fs::remove_file(internal_info_path).await;
+            }
 
             let deleted_object = DeletedObject {
                 key: Some(key),
@@ -256,6 +276,10 @@ impl S3 for FileSystem {
             checksum_sha1: checksum.checksum_sha1,
             checksum_sha256: checksum.checksum_sha256,
             checksum_crc64nvme: checksum.checksum_crc64nvme,
+            content_encoding: info.as_ref().and_then(crate::headers::load_content_encoding),
+            content_type: info.as_ref().and_then(crate::headers::load_content_type),
+            content_language: info.as_ref().and_then(crate::headers::load_content_language),
+            content_disposition: info.as_ref().and_then(crate::headers::load_content_disposition),
             ..Default::default()
         };
         Ok(S3Response::new(output))
@@ -288,12 +312,21 @@ impl S3 for FileSystem {
 
         let object_metadata = self.load_metadata(&input.bucket, &input.key, None).await?;
 
-        // TODO: detect content type
-        let content_type = ContentType::from("application/octet-stream");
+        // Load object headers from internal info
+        let info = self.load_internal_info(&input.bucket, &input.key).await?;
+
+        // Use stored content_type if available, otherwise default to application/octet-stream
+        let content_type = info
+            .as_ref()
+            .and_then(crate::headers::load_content_type)
+            .unwrap_or_else(|| ContentType::from("application/octet-stream"));
 
         let output = HeadObjectOutput {
             content_length: Some(try_!(i64::try_from(file_len))),
             content_type: Some(content_type),
+            content_encoding: info.as_ref().and_then(crate::headers::load_content_encoding),
+            content_language: info.as_ref().and_then(crate::headers::load_content_language),
+            content_disposition: info.as_ref().and_then(crate::headers::load_content_disposition),
             last_modified: Some(last_modified),
             metadata: object_metadata,
             ..Default::default()
@@ -467,6 +500,12 @@ impl S3 for FileSystem {
             }
         }
 
+        // Extract HTTP headers before destructuring (they will be saved to internal info)
+        let content_encoding = input.content_encoding.clone();
+        let content_type = input.content_type.clone();
+        let content_language = input.content_language.clone();
+        let content_disposition = input.content_disposition.clone();
+
         let PutObjectInput {
             body,
             bucket,
@@ -593,6 +632,13 @@ impl S3 for FileSystem {
 
         let mut info: InternalInfo = default();
         crate::checksum::modify_internal_info(&mut info, &checksum);
+        crate::headers::save_object_headers(
+            &mut info,
+            content_encoding.as_ref(),
+            content_type.as_ref(),
+            content_language.as_ref(),
+            content_disposition.as_ref(),
+        );
         self.save_internal_info(&bucket, &key, &info).await?;
 
         let output = PutObjectOutput {

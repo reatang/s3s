@@ -11,6 +11,7 @@ mod error;
 
 mod checksum;
 mod fs;
+mod headers;
 mod s3;
 mod utils;
 
