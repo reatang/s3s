@@ -226,8 +226,8 @@ pub async fn call(req: &mut Request, ccx: &CallContext<'_>) -> S3Result<Response
                             resp.body = Body::empty();
                         } else if let Some(status_code) = req.s3ext.success_action_status {
                             // Handle success_action_status - return specified status code
-                            resp.status = StatusCode::from_u16(status_code)
-                                .map_err(|_| invalid_request!("Invalid status code"))?;
+                            resp.status =
+                                StatusCode::from_u16(status_code).map_err(|_| invalid_request!("Invalid status code"))?;
                             // For 204 No Content, clear the body
                             if status_code == 204 {
                                 resp.body = Body::empty();
@@ -404,13 +404,15 @@ async fn prepare(req: &mut Request, ccx: &CallContext<'_>) -> S3Result<Prepare> 
                     S3Path::Bucket { .. } => {
                         // POST object
                         debug!(?multipart);
-                        
+
                         // Extract success_action fields for POST Object
-                        req.s3ext.success_action_redirect = multipart.find_field_value("success_action_redirect").map(|s| s.to_owned());
-                        req.s3ext.success_action_status = multipart.find_field_value("success_action_status")
+                        req.s3ext.success_action_redirect =
+                            multipart.find_field_value("success_action_redirect").map(std::borrow::ToOwned::to_owned);
+                        req.s3ext.success_action_status = multipart
+                            .find_field_value("success_action_status")
                             .and_then(|s| s.parse::<u16>().ok())
                             .filter(|&status| status == 200 || status == 201 || status == 204);
-                        
+
                         let file_stream = multipart.take_file_stream().expect("missing file stream");
                         // Aggregate file stream with size limit to get known length
                         // This is required because downstream handlers (like s3s-proxy) need content-length

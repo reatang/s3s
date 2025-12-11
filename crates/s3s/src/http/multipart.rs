@@ -974,19 +974,13 @@ mod tests {
         let ans = transform_multipart(body_stream, boundary.as_bytes()).await.unwrap();
 
         assert_eq!(ans.find_field_value("key").unwrap(), "my-object-key");
-        assert_eq!(
-            ans.find_field_value("success_action_redirect").unwrap(),
-            "https://example.com/success"
-        );
+        assert_eq!(ans.find_field_value("success_action_redirect").unwrap(), "https://example.com/success");
         assert_eq!(ans.file.name, filename);
     }
 
     #[tokio::test]
     async fn test_success_action_status_field() {
-        let fields = [
-            ("key", "my-object-key"),
-            ("success_action_status", "201"),
-        ];
+        let fields = [("key", "my-object-key"), ("success_action_status", "201")];
 
         let filename = "test.jpg";
         let content_type = "image/jpeg";
