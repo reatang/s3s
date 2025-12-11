@@ -212,8 +212,29 @@ pub async fn call(req: &mut Request, ccx: &CallContext<'_>) -> S3Result<Response
     match prep {
         Prepare::S3(op) => {
             match op.call(ccx, req).await {
-                Ok(resp) => {
-                    Ok(resp) //
+                Ok(mut resp) => {
+                    // Handle POST Object success_action fields
+                    if op.name() == "PutObject" && req.method == Method::POST {
+                        if let Some(redirect_url) = &req.s3ext.success_action_redirect {
+                            // Handle success_action_redirect - return 303 See Other with Location header
+                            resp.status = StatusCode::SEE_OTHER;
+                            resp.headers.insert(
+                                hyper::header::LOCATION,
+                                redirect_url.parse().map_err(|_| invalid_request!("Invalid redirect URL"))?,
+                            );
+                            // Clear body for redirect response
+                            resp.body = Body::empty();
+                        } else if let Some(status_code) = req.s3ext.success_action_status {
+                            // Handle success_action_status - return specified status code
+                            resp.status = StatusCode::from_u16(status_code)
+                                .map_err(|_| invalid_request!("Invalid status code"))?;
+                            // For 204 No Content, clear the body
+                            if status_code == 204 {
+                                resp.body = Body::empty();
+                            }
+                        }
+                    }
+                    Ok(resp)
                 }
                 Err(err) => {
                     error!(op = %op.name(), ?err, "op returns error");
@@ -383,6 +404,13 @@ async fn prepare(req: &mut Request, ccx: &CallContext<'_>) -> S3Result<Prepare> 
                     S3Path::Bucket { .. } => {
                         // POST object
                         debug!(?multipart);
+                        
+                        // Extract success_action fields for POST Object
+                        req.s3ext.success_action_redirect = multipart.find_field_value("success_action_redirect").map(|s| s.to_owned());
+                        req.s3ext.success_action_status = multipart.find_field_value("success_action_status")
+                            .and_then(|s| s.parse::<u16>().ok())
+                            .filter(|&status| status == 200 || status == 201 || status == 204);
+                        
                         let file_stream = multipart.take_file_stream().expect("missing file stream");
                         // Aggregate file stream with size limit to get known length
                         // This is required because downstream handlers (like s3s-proxy) need content-length

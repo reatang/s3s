@@ -933,4 +933,95 @@ mod tests {
 
         assert!(errored, "Should have received BoundaryBufferTooLarge error");
     }
+
+    #[tokio::test]
+    async fn test_success_action_redirect_field() {
+        let fields = [
+            ("key", "my-object-key"),
+            ("success_action_redirect", "https://example.com/success"),
+        ];
+
+        let filename = "test.jpg";
+        let content_type = "image/jpeg";
+        let boundary = "test-boundary";
+        let file_content = "test file content";
+
+        let body_bytes = {
+            let mut ss = vec![format!("--{boundary}\r\n")];
+            for &(n, v) in &fields {
+                ss.push(format!(
+                    concat!("Content-Disposition: form-data; name=\"{}\"\r\n", "\r\n", "{}\r\n", "--{}\r\n",),
+                    n, v, boundary
+                ));
+            }
+            ss.push(format!(
+                concat!(
+                    "Content-Disposition: form-data; name=\"{}\"; filename=\"{}\"\r\n",
+                    "Content-Type: {}\r\n",
+                    "\r\n",
+                    "{}\r\n",
+                    "--{}--\r\n",
+                ),
+                "file", filename, content_type, file_content, boundary
+            ));
+
+            ss.into_iter()
+                .map(|s| Ok(Bytes::from(s.into_bytes())))
+                .collect::<Vec<Result<Bytes, StdError>>>()
+        };
+
+        let body_stream = futures::stream::iter(body_bytes);
+        let ans = transform_multipart(body_stream, boundary.as_bytes()).await.unwrap();
+
+        assert_eq!(ans.find_field_value("key").unwrap(), "my-object-key");
+        assert_eq!(
+            ans.find_field_value("success_action_redirect").unwrap(),
+            "https://example.com/success"
+        );
+        assert_eq!(ans.file.name, filename);
+    }
+
+    #[tokio::test]
+    async fn test_success_action_status_field() {
+        let fields = [
+            ("key", "my-object-key"),
+            ("success_action_status", "201"),
+        ];
+
+        let filename = "test.jpg";
+        let content_type = "image/jpeg";
+        let boundary = "test-boundary";
+        let file_content = "test file content";
+
+        let body_bytes = {
+            let mut ss = vec![format!("--{boundary}\r\n")];
+            for &(n, v) in &fields {
+                ss.push(format!(
+                    concat!("Content-Disposition: form-data; name=\"{}\"\r\n", "\r\n", "{}\r\n", "--{}\r\n",),
+                    n, v, boundary
+                ));
+            }
+            ss.push(format!(
+                concat!(
+                    "Content-Disposition: form-data; name=\"{}\"; filename=\"{}\"\r\n",
+                    "Content-Type: {}\r\n",
+                    "\r\n",
+                    "{}\r\n",
+                    "--{}--\r\n",
+                ),
+                "file", filename, content_type, file_content, boundary
+            ));
+
+            ss.into_iter()
+                .map(|s| Ok(Bytes::from(s.into_bytes())))
+                .collect::<Vec<Result<Bytes, StdError>>>()
+        };
+
+        let body_stream = futures::stream::iter(body_bytes);
+        let ans = transform_multipart(body_stream, boundary.as_bytes()).await.unwrap();
+
+        assert_eq!(ans.find_field_value("key").unwrap(), "my-object-key");
+        assert_eq!(ans.find_field_value("success_action_status").unwrap(), "201");
+        assert_eq!(ans.file.name, filename);
+    }
 }
