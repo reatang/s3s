@@ -215,22 +215,45 @@ pub async fn call(req: &mut Request, ccx: &CallContext<'_>) -> S3Result<Response
                 Ok(mut resp) => {
                     // Handle POST Object success_action fields
                     if op.name() == "PutObject" && req.method == Method::POST {
+                        // 获取 bucket 和 key
+                        let (bucket, key) = match &req.s3ext.s3_path {
+                            Some(S3Path::Object { bucket, key }) => (bucket.as_str(), key.as_str()),
+                            _ => ("", ""),
+                        };
+                        let etag = resp.headers.get("ETag")
+                            .and_then(|v| v.to_str().ok())
+                            .unwrap_or("");
+                        
                         if let Some(redirect_url) = &req.s3ext.success_action_redirect {
-                            // Handle success_action_redirect - return 303 See Other with Location header
                             resp.status = StatusCode::SEE_OTHER;
-                            resp.headers.insert(
-                                hyper::header::LOCATION,
-                                redirect_url.parse().map_err(|_| invalid_request!("Invalid redirect URL"))?,
+                            let location = format!(
+                                "{}{}bucket={}&key={}&etag={}",
+                                redirect_url,
+                                if redirect_url.contains('?') { "&" } else { "?" },
+                                urlencoding::encode(bucket),
+                                urlencoding::encode(key),
+                                urlencoding::encode(etag)
                             );
-                            // Clear body for redirect response
+                            resp.headers.insert(hyper::header::LOCATION, location.parse()?);
                             resp.body = Body::empty();
                         } else if let Some(status_code) = req.s3ext.success_action_status {
-                            // Handle success_action_status - return specified status code
-                            resp.status =
-                                StatusCode::from_u16(status_code).map_err(|_| invalid_request!("Invalid status code"))?;
-                            // For 204 No Content, clear the body
-                            if status_code == 204 {
-                                resp.body = Body::empty();
+                            resp.status = StatusCode::from_u16(status_code)?;
+                            match status_code {
+                                201 => {
+                                    // 生成 PostResponse XML
+                                    let xml = format!(
+                                        r#"<?xml version="1.0" encoding="UTF-8"?>
+                    <PostResponse>
+                        <Bucket>{}</Bucket>
+                        <Key>{}</Key>
+                        <ETag>{}</ETag>
+                    </PostResponse>"#,
+                                        bucket, key, etag
+                                    );
+                                    resp.body = Body::from(xml);
+                                }
+                                204 => resp.body = Body::empty(),
+                                _ => {} // 200 保持原样
                             }
                         }
                     }
