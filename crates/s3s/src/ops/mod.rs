@@ -217,7 +217,7 @@ pub async fn call(req: &mut Request, ccx: &CallContext<'_>) -> S3Result<Response
                     if op.name() == "PutObject" && req.method == Method::POST {
                         // 获取 bucket 和 key
                         let (bucket, key) = match &req.s3ext.s3_path {
-                            Some(S3Path::Object { bucket, key }) => (bucket.as_str(), key.as_str()),
+                            Some(S3Path::Object { bucket, key }) => (bucket.as_ref(), key.as_ref()),
                             _ => ("", ""),
                         };
                         let etag = resp.headers.get("ETag")
@@ -234,10 +234,14 @@ pub async fn call(req: &mut Request, ccx: &CallContext<'_>) -> S3Result<Response
                                 urlencoding::encode(key),
                                 urlencoding::encode(etag)
                             );
-                            resp.headers.insert(hyper::header::LOCATION, location.parse()?);
+                            resp.headers.insert(hyper::header::LOCATION, location.parse().map_err(|e| {
+                                S3Error::with_source(S3ErrorCode::InternalError, Box::new(e))
+                            })?);
                             resp.body = Body::empty();
                         } else if let Some(status_code) = req.s3ext.success_action_status {
-                            resp.status = StatusCode::from_u16(status_code)?;
+                            resp.status = StatusCode::from_u16(status_code).map_err(|e| {
+                                S3Error::with_source(S3ErrorCode::InternalError, Box::new(e))
+                            })?;
                             match status_code {
                                 201 => {
                                     // 生成 PostResponse XML
