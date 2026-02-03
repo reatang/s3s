@@ -231,8 +231,56 @@ pub async fn call(req: &mut Request, ccx: &CallContext<'_>) -> S3Result<Response
     match prep {
         Prepare::S3(op) => {
             match op.call(ccx, req).await {
-                Ok(resp) => {
-                    Ok(resp) //
+                Ok(mut resp) => {
+                    // Handle POST Object success_action fields
+                    if op.name() == "PutObject" && req.method == Method::POST {
+                        // 获取 bucket 和 key
+                        let (bucket, key) = match &req.s3ext.s3_path {
+                            Some(S3Path::Object { bucket, key }) => (bucket.as_ref(), key.as_ref()),
+                            _ => ("", ""),
+                        };
+                        let etag = resp.headers.get("ETag")
+                            .and_then(|v| v.to_str().ok())
+                            .unwrap_or("");
+                        
+                        if let Some(redirect_url) = &req.s3ext.success_action_redirect {
+                            resp.status = StatusCode::SEE_OTHER;
+                            let location = format!(
+                                "{}{}bucket={}&key={}&etag={}",
+                                redirect_url,
+                                if redirect_url.contains('?') { "&" } else { "?" },
+                                urlencoding::encode(bucket),
+                                urlencoding::encode(key),
+                                urlencoding::encode(etag)
+                            );
+                            resp.headers.insert(hyper::header::LOCATION, location.parse().map_err(|e| {
+                                S3Error::with_source(S3ErrorCode::InternalError, Box::new(e))
+                            })?);
+                            resp.body = Body::empty();
+                        } else if let Some(status_code) = req.s3ext.success_action_status {
+                            resp.status = StatusCode::from_u16(status_code).map_err(|e| {
+                                S3Error::with_source(S3ErrorCode::InternalError, Box::new(e))
+                            })?;
+                            match status_code {
+                                201 => {
+                                    // 生成 PostResponse XML
+                                    let xml = format!(
+                                        r#"<?xml version="1.0" encoding="UTF-8"?>
+                    <PostResponse>
+                        <Bucket>{}</Bucket>
+                        <Key>{}</Key>
+                        <ETag>{}</ETag>
+                    </PostResponse>"#,
+                                        bucket, key, etag
+                                    );
+                                    resp.body = Body::from(xml);
+                                }
+                                204 => resp.body = Body::empty(),
+                                _ => {} // 200 保持原样
+                            }
+                        }
+                    }
+                    Ok(resp)
                 }
                 Err(err) => {
                     error!(op = %op.name(), ?err, "op returns error");
@@ -402,6 +450,15 @@ async fn prepare(req: &mut Request, ccx: &CallContext<'_>) -> S3Result<Prepare> 
                     S3Path::Bucket { .. } => {
                         // POST object
                         debug!(?multipart);
+
+                        // Extract success_action fields for POST Object
+                        req.s3ext.success_action_redirect =
+                            multipart.find_field_value("success_action_redirect").map(std::borrow::ToOwned::to_owned);
+                        req.s3ext.success_action_status = multipart
+                            .find_field_value("success_action_status")
+                            .and_then(|s| s.parse::<u16>().ok())
+                            .filter(|&status| status == 200 || status == 201 || status == 204);
+
                         let file_stream = multipart.take_file_stream().expect("missing file stream");
                         // Aggregate file stream with size limit to get known length
                         // This is required because downstream handlers (like s3s-proxy) need content-length
